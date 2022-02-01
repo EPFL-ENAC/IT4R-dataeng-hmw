@@ -1,1 +1,2 @@
-# postgres_password = 'blabla'
+
+postgres_user = 'ccfatigue'

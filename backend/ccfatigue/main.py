@@ -11,7 +11,7 @@ from ccfatigue.model import (
     Dashboard, Experience, Plot, SnCurveMethod, SnCurveResult, Test)
 from ccfatigue.config import settings
 from ccfatigue.services.database import Base, database, engine
-
+from ccfatigue.models.database import * 
 
 app = FastAPI()
 
