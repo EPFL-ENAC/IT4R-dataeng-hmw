@@ -3,7 +3,7 @@
         "Step Size": null,
         "Subset Size": null
     },
-    "Experience": {
+    "General": {
         "Control mode": "Load Controlled",
         "Date": "2021-06",
         "Experiment Type": "FA",

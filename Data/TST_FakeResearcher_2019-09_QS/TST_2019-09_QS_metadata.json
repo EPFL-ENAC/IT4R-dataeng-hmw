@@ -3,18 +3,18 @@
         "Step Size": null,
         "Subset Size": null
     },
-    "Experience": {
+    "General": {
         "Control mode": "Load Controlled",
-        "Date": "2021-06",
-        "Experiment Type": "FA",
-        "Fatigue Test Type": "CA",
+        "Date": "2019-09",
+        "Experiment Type": "QS",
+        "Fatigue Test Type": null,
         "Fracture": false,
         "Fracture Mode": null,
         "Initial Crack length": null,
         "Laboratory": "CCLAB",
         "Measuring Equipment": "Instron Machine",
         "Reliability Level": null,
-        "Researcher": "Shayan Khalooei"
+        "Researcher": "AAA FakeResearcher"
     },
     "Geometry": {
         "Length": 160,
