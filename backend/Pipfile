@@ -17,6 +17,12 @@ psycopg2 = "*"
 asyncpg = "*"
 sqlalchemy-utils = "*"
 alembic = "*"
+loguru = "*"
+matplotlib = "*"
+fuzzy = "*"
+fuzzywuzzy = "*"
+xlrd = "*"
+pytest = "*"
 
 [dev-packages]
 
