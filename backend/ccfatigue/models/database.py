@@ -3,18 +3,16 @@ Define the model as it is saved in the DB
 '''
 
 from ccfatigue.services.database import Base
-from sqlalchemy import MetaData
-from sqlalchemy import Table
 from sqlalchemy import Column
-from sqlalchemy import Integer, String, Date, Boolean, ForeignKey
+from sqlalchemy import Integer, String, Date, Boolean
 from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION, ENUM
-from sqlalchemy.orm import relationship
+
 
 # Generic definition in the models
 S80 = String(80)
 Enum_ExpType = ENUM('FA', 'QS', name='ExpType')
 Enum_FracMode = ENUM('Mode I', 'Mode II', 'Mode III', 'Combined',name='FracMode')
-Enum_FatTest = ENUM('FA', 'VA', 'BL', 'Combined', name='FatTest')
+Enum_FatTest = ENUM('CA', 'VA', 'BL', 'Combined', name='FatTest')
 Enum_ConMode = ENUM('Load Controlled', 'Displacement Controlled', name = 'ConMode')
 
 # Here will come Model definitions
@@ -31,16 +29,15 @@ class Experiment(Base):
     Data from the base folder data
     Folder name should provide unicity and connection to the other tables
     """
-    __tablename__ = 'experiment_details'
-    Folder = Column(S80,  primary_key=True)
+    __tablename__ = 'experience'
+    Folder = Column(S80, primary_key=True)
     Laboratory = Column(S80, nullable=False)
     Researcher = Column(S80, nullable=False)
     Date = Column(Date)
     Experiment_type = Column('Experiment Type', Enum_ExpType, nullable=False)
     Fracture = Column(Boolean, nullable=False)
-    Fracture_mode = Column('Fracture Mode', Enum_FracMode, nullable=False)
-    Initial_Crack_Length = Column("Initial Crack length", DOUBLE_PRECISION, 
-            nullable=False)
+    Fracture_mode = Column('Fracture Mode', Enum_FracMode)
+    Initial_Crack_Length = Column("Initial Crack length", DOUBLE_PRECISION)
     Experiment_id = Column(S80)
     Experiment_number = Column(Integer)
     Researcher_id = Column(S80)
@@ -105,18 +102,19 @@ class TestConditions(Base):
     """
     Data about test conditions
     """
-    # I know it's a spelling name mistake, but I'll keep it for consistency
-    __tablename__ = 'test_condtions' 
+    # I know it's a spelling name mistake, I've removed it
+    # This is allowed if close enough to the column name
+    __tablename__ = 'test_conditions'
     Folder = Column(S80,  primary_key=True)
-    Temperature = Column('Test condtions', DOUBLE_PRECISION)
-    Humidity = Column('DIC Analysis', DOUBLE_PRECISION)
+    Temperature = Column(DOUBLE_PRECISION)
+    Humidity = Column(DOUBLE_PRECISION)
     
 
 class DicAnalysis(Base):
     """
     Data about DIC Analysis
     """
-    __tablename__ = 'DIC_analysis' 
+    __tablename__ = 'dic_analysis'
     Folder = Column(S80,  primary_key=True)
     Subset_Size = Column('Subset Size', Integer)
     Step_Size = Column('Step Size', Integer)
@@ -128,7 +126,7 @@ class TestMetadata(Base):
     """
     __tablename__ = "tests"
     id = Column(Integer, primary_key=True)
-    Folder = Column(S80, ForeignKey('experiment_details.Folder'))
+    Folder = Column(S80)
     Specimen_number = Column('Specimen number', Integer)
     Stress_Ratio = Column('Stress Ratio', DOUBLE_PRECISION)
     Maximum_Stress = Column('Maximum Stress', DOUBLE_PRECISION)
@@ -142,7 +140,7 @@ class FatigueData(Base):
     """
     __tablename__ = 'fatigue_data'
     # required 
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     Machine_N_cycles = Column('Machine N_cycles', Integer, nullable=False)
     Machine_Load = Column(DOUBLE_PRECISION, nullable=False)
     Machine_Displacement = Column(DOUBLE_PRECISION, nullable=False)
@@ -160,6 +158,40 @@ class FatigueData(Base):
     Th_uppergrips = Column(Integer)
     Th_lowergrips = Column(Integer)
     # added for clarity
-    Folder = Column(S80, ForeignKey('experiment_details.Folder'))
+    TestMetadata_id = Column(Integer) # to directly join with TestMetadata
+    Folder = Column(S80)
 
+
+
+class ExperimentUnits(Base):
+    """
+    Standard units for the experiments that have units
+    This is saved here as Tests have only one metadata file
+    """
+    __tablename__ = 'experiment_units'
+    Folder = Column(S80, primary_key=True)
+    Initial_Crack_Length = Column("Initial Crack length", S80,
+            nullable=False)
+    Area_Density = Column('Area Density', S80)
+    Length = Column(S80)
+    Width = Column(S80)
+    Thickness = Column(S80)
+    Curing_Time = Column('Curing Time', S80)
+    Curing_Temperature = Column('Curing Temperature', S80)
+    Curing_Pressure = Column('Curing Pressure', S80)
+    Temperature = Column(S80)
+    Humidity = Column(S80)
+
+
+class TestUnits(Base):
+    """
+    Standard test units 
+    I keep them separate, even if there is only one file, 
+    as they are conceptually different from the Experiment units
+    and could in principle vary between tests
+    """
+    __tablename__ = 'test_units'
+    Folder = Column(S80, primary_key=True)
+    Maximum_Stress = Column("Maximum Stress", S80)
+    Loading_Rate = Column('Loading Rate', S80)
 
