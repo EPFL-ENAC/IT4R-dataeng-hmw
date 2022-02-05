@@ -3,6 +3,10 @@ import os
 import datetime
 import re
 import json
+
+import sqlalchemy
+from sqlalchemy import String, Integer, Boolean, Date
+from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION
 from Levenshtein import distance as distance
 
 OUTPUTDIR = "../ProcessedData/"
@@ -10,20 +14,40 @@ if not os.path.exists(OUTPUTDIR):
     os.makedirs(OUTPUTDIR)
 
 
-def BestWordMatch(word, alternatives, maxdiff=5):
+def BestWordMatch(word: str, alternatives: list, maxdiff=5) -> str:
     """
-    This subroutine compares a word with a list of alternatives,
-    and return the most likely match according to a word distance.
-    It returns the best word and its distance,
-    everything compared with the same case,
-    if the distance is below the maxdiff threshold,
-    which is roughly the number of typos, or e.g. "_" vs "\s"
+    Compares a word to be matched against a list of alternatives, and return the most likely.
+    Word is matched as lowercase comparison
+    :param word: string to be matched
+    :param alternatives: list of possible matches
+    :param maxdiff: maximum value of the Levenshtein edit distance
+    :return: best matched word in list, None if it does not fit the criteria
     """
+    if not alternatives:
+        return None
     dists = [(distance(word.lower(), x.lower()), x) for x in alternatives]
     d, best_match = sorted(dists)[0]
     if d < maxdiff:
         return best_match
     return None
+
+
+def save_nested_dict(top: list, bottom: list, data:list) -> dict:
+    """
+    creates a nested dictionary from input, not nans in keys
+    :param top: top descriptor (repeated)
+    :param bottom: individual key, second level
+    :param data: individual value, second level
+    :return: dictionary with {top : {bottom:data}, ...}
+    """
+    out = {}
+    for i, j, k in zip(top, bottom, data):
+        if pd.notna(i) and pd.notna(j):
+            if i not in out.keys():
+                out[i] = {j: k}
+            else:
+                out[i][j] = k
+    return out
 
 
 def CleanData(rawdata, OutTable):
@@ -35,6 +59,13 @@ def CleanData(rawdata, OutTable):
     Small inconsistencies between column names, table names are ignored
     The cleaned dictionary is returned for db insertion
     """
+    SQL2FUNC = {
+        String: str,
+        Integer: int,
+        DOUBLE_PRECISION: float,
+        Boolean: bool,
+        Date: lambda x: datetime.datetime.strptime(x, '%Y-%m')
+    }
     tablecols = OutTable.columns.keys()
     outdict = {}
     for col, val in rawdata.items():
@@ -47,19 +78,13 @@ def CleanData(rawdata, OutTable):
             # won't commit to database
             return
         mappedtype = OutTable.columns[mappedcol].type
-        # apply the given transformat
-        if isinstance(mappedtype, String):
-            func = str
-        if isinstance(mappedtype, Integer):
-            func = int
-        if isinstance(mappedtype, DOUBLE_PRECISION):
-            func = float
-        if isinstance(mappedtype, Boolean):
-            func = bool
+        # apply the given transformation
+        func = SQL2FUNC[mappedtype]
+        if func == bool:
             if str(val).lower() == "no":
                 # Should put here all the boolean values that can
                 # be considered False. Most strings or int are True by default
-                jsonval = False
+                val = False
         if isinstance(mappedtype, Date):
             # TODO insert more data possibilities for conversions
             func = lambda x: datetime.datetime.strptime(x, '%Y-%m')
@@ -74,23 +99,8 @@ def ProcessDataFrame(df, OutTable):
     but to bulk insert a modified pandas dataframe
     generated from the tests metadata or tests CSV
     """
-    allkeys = OutTable.columns.keys()
-    for x in df.columns:
-        # find the best table column name matching
-        rightcol = BestWordMatch(x, allkeys)
-        if rightcol is None:
-            # no match for the column
-            continue
-        coltype = OutTable.columns[rightcol].type
-        if isinstance(coltype, String):
-            typ = "string"
-        if isinstance(coltype, Integer):
-            typ = "Int64"
-        if isinstance(coltype, DOUBLE_PRECISION):
-            typ = "float64"
-        if isinstance(coltype, Boolean):
+        if typ == "bool":
             df[x] = df[x].apply(lambda x: False if str(x).lower() == "no" else x)
-            typ = "bool"
         # cast column for database insertion
         df[x] = df[x].astype(typ)
         df.rename({x: rightcol}, axis=1, inplace=True)
@@ -119,7 +129,7 @@ def ProcessPipeline(folder):
     for filename in os.listdir(folder):
         fullpath = os.path.join(folder, filename)
         print(filename, fullpath)
-        if filename.endswith(".xls"):
+        if filename.endswith("metadata.xls"):
             # process the excel file and saves the json
             jsonfile = ExtractFromExperimentExcel(fullpath, folder, schema=False)
             # re-import the json data
@@ -161,16 +171,19 @@ def ProcessPipeline(folder):
             # finds a file with the correct tail, and selects the test number
             match = re.search(r'(FA|QS)[_]+(\d+)', filename)
             if match is None:
-                # file does not match the requirements
-                # I do not need the date, as it is in metadata,
-                # but the test number has to be there
-                # it could be a random csv in folder
+                # File does not match the requirements; I do not need the date, as it is in metadata.
+                # But the test number has to be there! It could be a random csv in folder
                 continue
             test_number = match.group(2)
+
             df = pd.read_csv(fullpath, index_col=None)
-            df.dropna(axis=1, how='all', inplace=True)
-            df.dropna(axis=0, how='all', inplace=True)
-            mytable = Base.metadata.tables["fatigue_data"]
+
+            # cleaning class
+            test = PdExperimentData(df)
+            fatigue_table = Base.metadata.tables["fatigue_data"]
+            test.maptable(fatigue_table)
+            test.clean_nans()
+
             processedDF = ProcessDataFrame(df, mytable)
             # add the test number column
             processedDF["TestMetadata_id"] = int(test_number)
@@ -201,11 +214,9 @@ def ExtractFromExperimentExcel(filename, folder, schema=True):
     # clean empty fully empty rows and columns to identify those with data
     # Since there are required field, that should not remove all
 
-    experiment.dropna(axis=1, how='all', inplace=True)
-    experiment.dropna(axis=0, how='all', inplace=True)
+    experiment = CleanNaNs(experiment)
 
     # Now, first line would be the top descriptor of the json I want
-    experiment.iloc[0].fillna(method='ffill')
     top = experiment.iloc[0].fillna(method="ffill")
     bottom = experiment.iloc[1]
 
@@ -231,13 +242,7 @@ def ExtractFromExperimentExcel(filename, folder, schema=True):
         data = experiment.iloc[2]
     # Saving the schema to dictionary and json
     # Ignoring all NANs
-    toexport = {}
-    for i, j, k in zip(top, bottom, data):
-        if pd.notna(i) and pd.notna(j) and pd.notna(k):
-            if i not in toexport.keys():
-                toexport[i] = {j: k}
-            else:
-                toexport[i][j] = k
+    toexport = save_nested_dict(top, bottom, data)
     with open(outputname, 'w') as outputfile:
         json.dump(toexport, outputfile)
 
@@ -267,8 +272,7 @@ def ExtractFromTestsExcel(filename, folder, schema=True):
     # clean empty fully empty rows and columns to identify those with data
     # Since there are required field, that should not remove all
 
-    tests.dropna(axis=1, how='all', inplace=True)
-    tests.dropna(axis=0, how='all', inplace=True)
+    tests = CleanNaNs(tests)
 
     # Now, first line would be the top descriptor of the json I want
     header = tests.iloc[0]
@@ -321,3 +325,178 @@ def ProcessXLSMetadata(filename):
     Returns the with researcher name, date, type
     """
     pass
+
+
+def CleanNaNs(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Removing all the unused lines and columns from the dataframe
+    :param df: input dataframe
+    """
+    df.dropna(axis=1, how='all', inplace=True)
+    df.dropna(axis=0, how='all', inplace=True)
+    return df
+
+
+def MapTableNames(df: pd.DataFrame, table: sqlalchemy.Table) -> pd.DataFrame:
+    """
+    Renames the colums according to the mapped table
+    :return: output dataframe
+    """
+    allkeys = table.columns.keys()
+    for col in df.columns:
+        rightcol = BestWordMatch(col, allkeys)
+        if rightcol is None:
+            # no match for the column
+            continue
+        df.rename({col: rightcol}, axis=1, inplace=True)
+    return df
+
+
+def MapTableTypes(df: pd.DataFrame, table: sqlalchemy.Table) -> pd.DataFrame:
+    """
+    Renames the columns types to the mapped table
+    :return: output dataframe
+    """
+    SQL2PYTHON = {
+        String: "string",
+        Integer: "Int64",
+        DOUBLE_PRECISION: "float64",
+        BOOLEAN: "boolc",
+    }
+    for col in df.columns:
+        coltype = table.columns[col].type
+        typ = SQL2PYTHON[coltype]
+        df[col] = df[col].astype(typ)
+    return df
+
+
+class PdExcelData:
+    """
+    Process a dataframe, to be mapped to a sql table, to extract information
+    """
+    # mapper from sql type to python dataframe, to expand as needed
+    SQL2PD = {
+        String: "string",
+        Integer: "Int64",
+        DOUBLE_PRECISION: "float64",
+        BOOLEAN: "bool",
+    }
+
+    def __init__(self, df: pd.DataFrame):
+        self.df = df
+
+    def maptable(self, table: sqlalchemy.Table):
+        """
+        Associate the df to a table
+        :param table: output table
+        """
+        allcolumns = [column for column in table.columns]
+        self.colnames = [col.name: col.type for col in allcolumns]
+        self.coltypes = {col.name: col.type for col in allcolumns}
+        self.colnullable = {col.name: col.nullable for col in allcolumns}
+
+    def clean_nans(self):
+        """
+        Removing all the unused lines and columns from the dataframe
+        :param df: input dataframe
+        """
+        self.df.dropna(axis=1, how='all', inplace=True)
+        self.df.dropna(axis=0, how='all', inplace=True)
+
+    def change_columns_names(self):
+        """
+        Renaming the dataframe columns according to the table column names
+        """
+        for col in self.df.columns:
+            columns = self.coltypes.keys()
+            rightcol = BestWordMatch(col, columns)
+            if rightcol is None:
+                # no match for the column
+                print(f"No match for column {col}")
+                continue
+            self.df.rename({col: rightcol}, axis=1, inplace=True)
+
+
+class PdExperimentTemplate(PdExcelData):
+    """
+    Class that deals with reading the excel metadata template (experiment sheet)
+    and saves relevant info to tables
+    """
+    def read_schema(self):
+        # Infers the information from the file
+        # I strongly assume a structure here
+        self.df.set_index(self.df.columns[0], drop=True, inplace=True)
+        # Expand top descriptor to adjacent cells
+        self.database = self.df.iloc[0].fillna(method='ffill')
+        self.columns = self.df.iloc[1]
+        self.units = self.df.loc['Unit']
+        self.type = self.df.loc["Type"]
+        self.type = []
+        # Either of them, not the most robust method
+        # self.mandatory = self.df.['Mandatory'].apply(lambda x: x == "*")
+        self.mandatory = self.df['Mandatory'].apply(lambda x: not pd.isna(x))
+    def export_json(fname):
+        """
+        Saves data to a series of json
+        """
+        x = [self.units, self.types, self.mandatory]
+        fileextension = ["_names", "_units", "_mandatory"]
+        for values, name in zip(x, fileextension):
+            data = save_nested_dict(self.database, self.columns, values)
+            json.dump(data, fname + name + ".json")
+
+
+class PdTestsTemplate(PdExcelData):
+    """
+    Class that deals with reading the excel metadata template (tests)
+    and saves relevant info to tables
+    """
+    def read_schema(self):
+        # Infers the information from the file
+        # I strongly assume a structure here
+        self.df.set_index(self.df.columns[0], drop=True, inplace=True)
+        # Expand top descriptor to adjacent cells
+        self.columns = self.df.iloc[0]
+        self.units = self.df.loc['Unit']
+        self.type = self.df.loc["Type"]
+        # Either of them, not the most robust method
+        # self.mandatory = self.df.['Mandatory'].apply(lambda x: x == "*")
+        self.mandatory = self.df['Mandatory'].apply(lambda x: not pd.isna(x))
+    def export_json(fname):
+        """
+        Saves data to a series of json
+        Each record has a list of properties
+        This
+        """
+        record = zip(self.columns, self.units, self.type, self.mandatory)
+        data = {col:{
+            'unit':unit,
+            'type': typecol,
+            'mandatory': mandatory}
+            for col, unit, typecol, mandatory in record}
+        json.dump(data, fname + name + ".json")
+
+
+class PdExperimentData(PdExcelData):
+    """
+    Class that deals with reading the excel metadata template (experiment sheet)
+    and saves relevant info to tables
+    """
+    def read_schema(self):
+        # Infers the information from the file; I strongly assume a schema here
+        self.df.set_index(self.df.columns[0], drop=True, inplace=True)
+        # Expand top descriptor to adjacent cells
+        self.database = self.df.iloc[0].fillna(method='ffill')
+        self.columns = self.df.iloc[1]
+        self.data = self.df.iloc[2]
+
+    def export_json(fname):
+        """
+        Saves data to a series of json
+        will add extension
+        """
+        x = [self.units, self.types, self.mandatory]
+        fileextension = ["_names", "_units", "_mandatory"]
+        for values, name in zip(x, fileextension):
+            data = save_nested_dict(self.database, self.columns, values)
+            json.dump(data, fname + name + ".json")
