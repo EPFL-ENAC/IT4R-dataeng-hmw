@@ -6,7 +6,7 @@ import json
 
 import sqlalchemy
 from sqlalchemy import String, Integer, Boolean, Date
-from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION
+from sqlalchemy.dialects.postgresql import REAL, DOUBLE_PRECISION
 from Levenshtein import distance as distance
 
 OUTPUTDIR = "../ProcessedData/"
@@ -32,7 +32,7 @@ def BestWordMatch(word: str, alternatives: list, maxdiff=5) -> str:
     return None
 
 
-def save_nested_dict(top: list, bottom: list, data:list) -> dict:
+def save_nested_dict(top: list, bottom: list, data: list) -> dict:
     """
     creates a nested dictionary from input, not nans in keys
     :param top: top descriptor (repeated)
@@ -50,66 +50,24 @@ def save_nested_dict(top: list, bottom: list, data:list) -> dict:
     return out
 
 
-def CleanData(rawdata, OutTable):
+def NullablesInTable(toinsert: dict, table: sqlalchemy.Table) -> bool:
     """
-    Cleaning subroutine
-    This subroutine receives a json or a dictionary ready to be inserted
-    Data has to be validated against the existing metadata
-    to convert data into the right format
-    Small inconsistencies between column names, table names are ignored
-    The cleaned dictionary is returned for db insertion
+    Checks required records in the table
+    :param toinsert: key and value to insert
+    :param table: tablebase
     """
-    SQL2FUNC = {
-        String: str,
-        Integer: int,
-        DOUBLE_PRECISION: float,
-        Boolean: bool,
-        Date: lambda x: datetime.datetime.strptime(x, '%Y-%m')
-    }
-    tablecols = OutTable.columns.keys()
-    outdict = {}
-    for col, val in rawdata.items():
-        if val is None:
-            # No need to insert null values
-            continue
-        mappedcol = BestWordMatch(col, tablecols)
-        if mappedcol is None:
-            # column name is too different to be guessed
-            # won't commit to database
-            return
-        mappedtype = OutTable.columns[mappedcol].type
-        # apply the given transformation
-        func = SQL2FUNC[mappedtype]
-        if func == bool:
-            if str(val).lower() == "no":
-                # Should put here all the boolean values that can
-                # be considered False. Most strings or int are True by default
-                val = False
-        if isinstance(mappedtype, Date):
-            # TODO insert more data possibilities for conversions
-            func = lambda x: datetime.datetime.strptime(x, '%Y-%m')
-
-        outdict[mappedcol] = func(val)
-    return outdict
+    notnullable = [x.name for x in table.columns if not x.nullable]
+    for col in notnullable:
+        if col not in toinsert.keys():
+            print(f"Column {col} not present and required")
+            return True
+    return False
 
 
-def ProcessDataFrame(df, OutTable):
+def InsertToTable(data, engine: sqlalchemy.engine, outtable: sqlalchemy.Table):
     """
-    Variation of the cleandata subroutine,
-    but to bulk insert a modified pandas dataframe
-    generated from the tests metadata or tests CSV
-    """
-        if typ == "bool":
-            df[x] = df[x].apply(lambda x: False if str(x).lower() == "no" else x)
-        # cast column for database insertion
-        df[x] = df[x].astype(typ)
-        df.rename({x: rightcol}, axis=1, inplace=True)
-    return df
-
-
-def InsertToTable(data, engine, outtable):
-    """
-    subroutine to commit the data to the DB
+    subroutine to commit data to the DB
+    :param data: dictionary or json to insert
     """
     try:
         ins = outtable.insert(data)
@@ -125,18 +83,26 @@ def ProcessPipeline(folder):
     This is an experiment folder! Not one with the metadata only
     input: folder that contains metadata and input data
     """
-
     for filename in os.listdir(folder):
         fullpath = os.path.join(folder, filename)
         print(filename, fullpath)
         if filename.endswith("metadata.xls"):
             # process the excel file and saves the json
-            jsonfile = ExtractFromExperimentExcel(fullpath, folder, schema=False)
-            # re-import the json data
-            with open(jsonfile, 'r') as fname:
-                meta = json.load(fname)
-            # this is a composite json that will inject to multiple tables
-            # check against all the database table we created
+            sheet = pd.read_excel(
+                fullpath,
+                sheet_name="Experiment",
+                header=None
+            )
+
+            basefile = os.path.basename(filename)
+            basefile = os.path.splitext(basefile)[0]
+            outputname = os.path.join(OUTPUTDIR, basefile)
+
+            experiment = PdExperimentData(sheet)
+            experiment.clean_nans()
+            experiment.export_json(outputname)
+            meta = experiment.json
+            # bit of extra work, as I've chosen separated table
             alltabs = Base.metadata.tables.keys()
             for key, subdict in meta.items():
                 t = BestWordMatch(key, alltabs)
@@ -152,161 +118,58 @@ def ProcessPipeline(folder):
                 if "Folder" in tablecols:
                     # folder is the ID key for some tables
                     cleanedjson["Folder"] = folder
-                # Finally insert the metadata into the database
-                InsertToTable(cleanedjson, engine, mytable)
+
+                # If the required values are there:
+                if not NullablesInTable(cleanedjson, mytable):
+                    # Finally insert the metadata into the database
+                    InsertToTable(cleanedjson, engine, mytable)
 
             # Now, processing the "tests" sheet in the excel file and saves csv
-            csvfile = ExtractFromTestsExcel(fullpath, folder, schema=False)
-            df = pd.read_csv(csvfile, index_col=None)
+            sheet = pd.read_excel(
+                fullpath,
+                sheet_name="Tests",
+            )
+            tests = PdExperimentTest(sheet)
             mytable = Base.metadata.tables["tests"]
-            processedDF = ProcessDataFrame(df, mytable)
-            # add folder column for this
+
+            tests.clean_nans()
+            tests.change_columns_names(mytable)
+            tests.change_columns_types(mytable)
+            tests.export_csv(outputname)
+
+            processedDF = tests.df
             processedDF["Folder"] = folder
             # Finally insert the metadata into the database
             # dataframe is properly transformed
-            InsertToTable(processedDF.to_dict(orient="records"), engine, mytable)
+            InsertToTable(
+                processedDF.to_dict(orient="records"),
+                engine,
+                mytable
+            )
         # processing the test data
         if filename.endswith(".csv"):
-            # feels hacky :(
             # finds a file with the correct tail, and selects the test number
             match = re.search(r'(FA|QS)[_]+(\d+)', filename)
             if match is None:
                 # File does not match the requirements; I do not need the date, as it is in metadata.
                 # But the test number has to be there! It could be a random csv in folder
                 continue
+            test_type = match.group(1)
             test_number = match.group(2)
 
             df = pd.read_csv(fullpath, index_col=None)
 
-            # cleaning class
+            # cleaning methods
             test = PdExperimentData(df)
             fatigue_table = Base.metadata.tables["fatigue_data"]
-            test.maptable(fatigue_table)
             test.clean_nans()
-
-            processedDF = ProcessDataFrame(df, mytable)
+            test.change_columns_names(fatigue_table)
+            test.change_columns_types(fatigue_table)
+            processedDF = test.df
             # add the test number column
             processedDF["TestMetadata_id"] = int(test_number)
             processedDF["Folder"] = folder
             InsertToTable(processedDF.to_dict(orient="records"), engine, mytable)
-
-
-def ExtractFromExperimentExcel(filename, folder, schema=True):
-    """
-    Performs an initial feature extraction from the provided
-    excel metadata file to extract information.
-    Assumed structure:
-    xls ------Sheet one named 'Experiment'
-          |---Sheet two named 'Tests'
-
-    This subroutine deals with the 'Experiment' data
-    schema = "schema" is true for the toplevel xls, saves units
-             = otherwise it looks for data" for the experiment folders
-    """
-
-    sheets = pd.read_excel(filename, sheet_name=None, header=None)
-    # Would be safer to assume that there are two sheets and call
-    # them by name by cycling over them
-    # but I have to assume something somewhere!
-
-    experiment = sheets["Experiment"]
-
-    # clean empty fully empty rows and columns to identify those with data
-    # Since there are required field, that should not remove all
-
-    experiment = CleanNaNs(experiment)
-
-    # Now, first line would be the top descriptor of the json I want
-    top = experiment.iloc[0].fillna(method="ffill")
-    bottom = experiment.iloc[1]
-
-    outputfolder = OUTPUTDIR
-    if not os.path.exists(outputfolder):
-        os.makedirs(outputfolder)
-    basefile = os.path.basename(filename)
-    basefile = os.path.splitext(basefile)[0]
-    outputname = os.path.join(
-        outputfolder,
-        basefile + "_experiment_metadata.json")
-
-    if schema:
-        # last, find the units
-        # In this file at least, it seems to be a column name
-        # It seems safer than assuming a column number...
-        experiment = experiment.set_index(experiment.columns[0])
-        data = experiment.iloc['Unit']
-
-    else:
-        # in the data I have it is the third line
-        # again, this is not robust
-        data = experiment.iloc[2]
-    # Saving the schema to dictionary and json
-    # Ignoring all NANs
-    toexport = save_nested_dict(top, bottom, data)
-    with open(outputname, 'w') as outputfile:
-        json.dump(toexport, outputfile)
-
-    return outputname
-
-
-def ExtractFromTestsExcel(filename, folder, schema=True):
-    """
-    Performs an initial feature extraction from the provided
-    excel metadata file to extract information.
-    Assumed structure:
-    xls ------Sheet one named 'Experiment'
-          |---Sheet two named 'Tests'
-
-    This subroutine deals with the "Tests" data
-    schema = "schema" is true for the toplevel xls, saves units
-             = otherwise it looks for data" for the experiment folders
-    """
-
-    sheets = pd.read_excel(filename, sheet_name=None, header=None)
-    # Would be safer to assume that there are two sheets and call
-    # them by name by cycling over them
-    # but I have to assume something somewhere!
-
-    tests = sheets["Tests"]
-
-    # clean empty fully empty rows and columns to identify those with data
-    # Since there are required field, that should not remove all
-
-    tests = CleanNaNs(tests)
-
-    # Now, first line would be the top descriptor of the json I want
-    header = tests.iloc[0]
-
-    basefile = os.path.basename(filename)
-    basefile = os.path.splitext(basefile)[0]
-
-    if schema:
-        # assume there is an index
-        tests = tests.set_index(tests.columns[0])
-        # extract the unit data
-        data = tests.loc['Unit']
-        toexport = {}
-        for i, j in zip(header, data):
-            if pd.notna(i) and pd.notna(j):
-                toexport[i] = j
-        outputname = os.path.join(
-            OUTPUTDIR,
-            basefile + "_tests_metadata.json")
-
-        with open(outputname, 'w') as outputfile:
-            json.dump(toexport, outputfile)
-
-    else:
-        # return the csv of the tests to file
-        # since I did not process it, header *should be the first line
-        # data is in the subsequent lines
-        outputname = os.path.join(
-            OUTPUTDIR,
-            basefile + "_tests_metadata.csv")
-
-        tests.to_csv(outputname, index=False, header=False)
-
-    return outputname
 
 
 def ProcessCSVData(filename):
@@ -327,73 +190,21 @@ def ProcessXLSMetadata(filename):
     pass
 
 
-def CleanNaNs(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Removing all the unused lines and columns from the dataframe
-    :param df: input dataframe
-    """
-    df.dropna(axis=1, how='all', inplace=True)
-    df.dropna(axis=0, how='all', inplace=True)
-    return df
-
-
-def MapTableNames(df: pd.DataFrame, table: sqlalchemy.Table) -> pd.DataFrame:
-    """
-    Renames the colums according to the mapped table
-    :return: output dataframe
-    """
-    allkeys = table.columns.keys()
-    for col in df.columns:
-        rightcol = BestWordMatch(col, allkeys)
-        if rightcol is None:
-            # no match for the column
-            continue
-        df.rename({col: rightcol}, axis=1, inplace=True)
-    return df
-
-
-def MapTableTypes(df: pd.DataFrame, table: sqlalchemy.Table) -> pd.DataFrame:
-    """
-    Renames the columns types to the mapped table
-    :return: output dataframe
-    """
-    SQL2PYTHON = {
-        String: "string",
-        Integer: "Int64",
-        DOUBLE_PRECISION: "float64",
-        BOOLEAN: "boolc",
-    }
-    for col in df.columns:
-        coltype = table.columns[col].type
-        typ = SQL2PYTHON[coltype]
-        df[col] = df[col].astype(typ)
-    return df
-
-
 class PdExcelData:
     """
     Process a dataframe, to be mapped to a sql table, to extract information
     """
-    # mapper from sql type to python dataframe, to expand as needed
-    SQL2PD = {
-        String: "string",
-        Integer: "Int64",
-        DOUBLE_PRECISION: "float64",
-        BOOLEAN: "bool",
-    }
-
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame)):
         self.df = df
 
-    def maptable(self, table: sqlalchemy.Table):
+
+    def maptable(self, , table:sqlalchemy:Table):
         """
-        Associate the df to a table
-        :param table: output table
+        Associate the dataframe to column for later processing
         """
         allcolumns = [column for column in table.columns]
-        self.colnames = [col.name: col.type for col in allcolumns]
-        self.coltypes = {col.name: col.type for col in allcolumns}
-        self.colnullable = {col.name: col.nullable for col in allcolumns}
+        self.tablecolnames = [col.name for col in allcolumns}
+        self.tablecoltypes = {col.name: col.type for col in allcolumns}
 
     def clean_nans(self):
         """
@@ -403,18 +214,60 @@ class PdExcelData:
         self.df.dropna(axis=1, how='all', inplace=True)
         self.df.dropna(axis=0, how='all', inplace=True)
 
-    def change_columns_names(self):
+    def change_columns_names(self, table: sqlalchemy.Table):
         """
         Renaming the dataframe columns according to the table column names
         """
-        for col in self.df.columns:
-            columns = self.coltypes.keys()
-            rightcol = BestWordMatch(col, columns)
-            if rightcol is None:
-                # no match for the column
+        allcolumns = [column for column in table.columns]
+        colnames = {col.name: col.type for col in allcolumns}
+        coltypes = {col.name: col.type for col in allcolumns}
+        for oldcol in self.df.columns:
+            newcol = BestWordMatch(oldcol, self.tablecolnames)
+            if newcol is None:
                 print(f"No match for column {col}")
                 continue
-            self.df.rename({col: rightcol}, axis=1, inplace=True)
+            self.df.rename({oldcol: newcol}, axis=1, inplace=True)
+
+    def change_columns_types(self, table: sqlalchemy.Table):
+        """
+        Renaming the dataframe columns according to the table column names
+        """
+        # mapper from sql type to python dataframe, to expand as needed
+        SQL2PD = {
+            String: "string",
+            Integer: "Int64",
+            DOUBLE_PRECISION: "float64",
+            REAL: "float32",
+            Boolean: "bool",
+            Date: "Date"
+        }
+        SQL2FNC = {
+            String: str,
+            Integer: int,
+            DOUBLE_PRECISION: float,
+            REAL: float,
+            Boolean: bool,
+            Date: pd.to_datetime
+        }
+        for oldcol in self.df.columns:
+            newcol = BestWordMatch(oldcol, self.tablecolnames)
+            if newcol is None:
+                print(f"Error: no match for {col}")
+                continue
+            print(self.tablecoltypes[newcol], self.SQL2PD.keys())
+            if tablecoltypes[newcol] in self.SQL2PD.keys():
+
+                func = self.SQL2FUNC[coltypes(newcol)]
+                typ = self.SQL2PD[coltypes(newcol)]
+            else:
+                print(f"column type {tablecoltypes[newcol]} not supported")
+            # before casting the column, some checks on data
+            if isinstance(tablecoltypes[newcol], Boolean):
+                # possible values that should be casted as no
+                nos = ["no", "n", "false", "f"]
+                self.df.apply(lambda x: False if str(x).lower() in nos else True)
+            self.df.apply(func)
+            self.dt[col].astype(typ)
 
 
 class PdExperimentTemplate(PdExcelData):
@@ -422,6 +275,7 @@ class PdExperimentTemplate(PdExcelData):
     Class that deals with reading the excel metadata template (experiment sheet)
     and saves relevant info to tables
     """
+
     def read_schema(self):
         # Infers the information from the file
         # I strongly assume a structure here
@@ -435,6 +289,7 @@ class PdExperimentTemplate(PdExcelData):
         # Either of them, not the most robust method
         # self.mandatory = self.df.['Mandatory'].apply(lambda x: x == "*")
         self.mandatory = self.df['Mandatory'].apply(lambda x: not pd.isna(x))
+
     def export_json(fname):
         """
         Saves data to a series of json
@@ -451,6 +306,7 @@ class PdTestsTemplate(PdExcelData):
     Class that deals with reading the excel metadata template (tests)
     and saves relevant info to tables
     """
+
     def read_schema(self):
         # Infers the information from the file
         # I strongly assume a structure here
@@ -462,6 +318,7 @@ class PdTestsTemplate(PdExcelData):
         # Either of them, not the most robust method
         # self.mandatory = self.df.['Mandatory'].apply(lambda x: x == "*")
         self.mandatory = self.df['Mandatory'].apply(lambda x: not pd.isna(x))
+
     def export_json(fname):
         """
         Saves data to a series of json
@@ -469,8 +326,8 @@ class PdTestsTemplate(PdExcelData):
         This
         """
         record = zip(self.columns, self.units, self.type, self.mandatory)
-        data = {col:{
-            'unit':unit,
+        data = {col: {
+            'unit': unit,
             'type': typecol,
             'mandatory': mandatory}
             for col, unit, typecol, mandatory in record}
@@ -482,9 +339,9 @@ class PdExperimentData(PdExcelData):
     Class that deals with reading the excel metadata template (experiment sheet)
     and saves relevant info to tables
     """
+
     def read_schema(self):
         # Infers the information from the file; I strongly assume a schema here
-        self.df.set_index(self.df.columns[0], drop=True, inplace=True)
         # Expand top descriptor to adjacent cells
         self.database = self.df.iloc[0].fillna(method='ffill')
         self.columns = self.df.iloc[1]
@@ -492,11 +349,30 @@ class PdExperimentData(PdExcelData):
 
     def export_json(fname):
         """
-        Saves data to a series of json
+        Saves data to a json
         will add extension
         """
-        x = [self.units, self.types, self.mandatory]
-        fileextension = ["_names", "_units", "_mandatory"]
-        for values, name in zip(x, fileextension):
-            data = save_nested_dict(self.database, self.columns, values)
-            json.dump(data, fname + name + ".json")
+        self.data
+        data = save_nested_dict(self.database, self.columns, self.data)
+        outputname = fname + ".json"
+        # also, save locally
+        self.json = json.dumps(data)
+        with open(outputname, 'w') as outputfile:
+            json.dump(toexport, outputfile)
+
+
+class PdExperimentTest(PdExcelData):
+    """
+    Class that deals with reading the excel metadata template (test sheet)
+    and saves relevant info to tables
+    """
+
+    def export_csv(fname):
+        """
+        Saves data to a series of csv
+        will add extension
+        This file should only have data and the header
+        """
+        outputname = fname + ".csv"
+        with open(outputname, 'w') as outputfile:
+            pd.to_csv(toexport, outputfile, ind)

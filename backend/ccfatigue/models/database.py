@@ -5,23 +5,20 @@ Define the model as it is saved in the DB
 from ccfatigue.services.database import Base
 from sqlalchemy import Column
 from sqlalchemy import Integer, String, Date, Boolean
-from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION, ENUM
+from sqlalchemy.dialects.postgresql import REAL, DOUBLE_PRECISION, ENUM
 
+# Generic definitions used in the models
 
-# Generic definition in the models
 S80 = String(80)
+# Categorical types
 Enum_ExpType = ENUM('FA', 'QS', name='ExpType')
-Enum_FracMode = ENUM('Mode I', 'Mode II', 'Mode III', 'Combined',name='FracMode')
+Enum_FracMode = ENUM('Mode I', 'Mode II', 'Mode III', 'Combined', name='FracMode')
 Enum_FatTest = ENUM('CA', 'VA', 'BL', 'Combined', name='FatTest')
-Enum_ConMode = ENUM('Load Controlled', 'Displacement Controlled', name = 'ConMode')
+Enum_ConMode = ENUM('Load Controlled', 'Displacement Controlled', name='ConMode')
+
 
 # Here will come Model definitions
 
-# I've chosen to create a star-like database, with all the metadata
-# connected to the main test one, rather than creating json data
-# Folder string seems like a reasonable choice of primary key for the databases
-# Alternatively, it can be saved as a json output,
-# or a jsonb kind of column
 
 class Experiment(Base):
     """
@@ -52,7 +49,7 @@ class Publication(Base):
     Publication details from metadata
     """
     __tablename__ = 'publication'
-    Folder = Column(S80,  primary_key=True)
+    Folder = Column(S80, primary_key=True)
     Title = Column(S80)
     Author = Column(S80)
     Year = Column(String(4))
@@ -65,7 +62,7 @@ class MaterialType(Base):
     Material information of the experiment
     """
     __tablename__ = 'material_type'
-    Folder = Column(S80,  primary_key=True)
+    Folder = Column(S80, primary_key=True)
     Fiber_Material = Column('Fiber Material', S80)
     Fiber_Geometry = Column('Fiber Geometry', S80)
     Area_Density = Column('Area Density', DOUBLE_PRECISION)
@@ -79,7 +76,7 @@ class Geometry(Base):
     Geometry information of the experiment
     """
     __tablename__ = 'geometry'
-    Folder = Column(S80,  primary_key=True)
+    Folder = Column(S80, primary_key=True)
     Length = Column(DOUBLE_PRECISION)
     Width = Column(DOUBLE_PRECISION)
     Thickness = Column(DOUBLE_PRECISION)
@@ -90,7 +87,7 @@ class LaminatesAndAssemblies(Base):
     Data about Laminates and Assemblies
     """
     __tablename__ = 'laminates_and_assemblies'
-    Folder = Column(S80,  primary_key=True)
+    Folder = Column(S80, primary_key=True)
     Curing_Time = Column('Curing Time', DOUBLE_PRECISION)
     Curing_Temperature = Column('Curing Temperature', DOUBLE_PRECISION)
     Curing_Pressure = Column('Curing Pressure', DOUBLE_PRECISION)
@@ -105,17 +102,17 @@ class TestConditions(Base):
     # I know it's a spelling name mistake, I've removed it
     # This is allowed if close enough to the column name
     __tablename__ = 'test_conditions'
-    Folder = Column(S80,  primary_key=True)
+    Folder = Column(S80, primary_key=True)
     Temperature = Column(DOUBLE_PRECISION)
     Humidity = Column(DOUBLE_PRECISION)
-    
+
 
 class DicAnalysis(Base):
     """
     Data about DIC Analysis
     """
     __tablename__ = 'dic_analysis'
-    Folder = Column(S80,  primary_key=True)
+    Folder = Column(S80, primary_key=True)
     Subset_Size = Column('Subset Size', Integer)
     Step_Size = Column('Step Size', Integer)
 
@@ -130,10 +127,11 @@ class TestMetadata(Base):
     Specimen_number = Column('Specimen number', Integer)
     Stress_Ratio = Column('Stress Ratio', DOUBLE_PRECISION)
     Maximum_Stress = Column('Maximum Stress', DOUBLE_PRECISION)
-    Loading_rate = Column('Loading rate',DOUBLE_PRECISION)
+    Loading_rate = Column('Loading rate', DOUBLE_PRECISION)
     Run_out = Column('Run-out', Boolean)
 
 
+# noinspection SpellCheckingInspection
 class FatigueData(Base):
     """
     Data stored from each fatigue test in each experiment
@@ -152,15 +150,14 @@ class FatigueData(Base):
     crack_length = Column('crack_length', DOUBLE_PRECISION)
     Th_time = Column(Integer)
     Th_N_cycles = Column('Th N_cycles', Integer)
-    Th_N_specimen_max = Column('Th N_specimen_max', Integer)
-    Th_specimen_mean = Column('Th specimen_mean', Integer)
-    Th_chamber = Column(Integer)
-    Th_uppergrips = Column(Integer)
-    Th_lowergrips = Column(Integer)
+    Th_N_specimen_max = Column('Th N_specimen_max', REAL)
+    Th_specimen_mean = Column('Th specimen_mean', REAL)
+    Th_chamber = Column(REAL)
+    Th_uppergrips = Column(REAL)
+    Th_lowergrips = Column(REAL)
     # added for clarity
-    TestMetadata_id = Column(Integer) # to directly join with TestMetadata
-    Folder = Column(S80)
-
+    TestMetadata_id = Column(Integer)  # to directly join with TestMetadata
+    Folder = Column(S80)  # this to query between tables
 
 
 class ExperimentUnits(Base):
@@ -171,7 +168,7 @@ class ExperimentUnits(Base):
     __tablename__ = 'experiment_units'
     Folder = Column(S80, primary_key=True)
     Initial_Crack_Length = Column("Initial Crack length", S80,
-            nullable=False)
+                                  nullable=False)
     Area_Density = Column('Area Density', S80)
     Length = Column(S80)
     Width = Column(S80)
@@ -194,4 +191,3 @@ class TestUnits(Base):
     Folder = Column(S80, primary_key=True)
     Maximum_Stress = Column("Maximum Stress", S80)
     Loading_Rate = Column('Loading Rate', S80)
-
